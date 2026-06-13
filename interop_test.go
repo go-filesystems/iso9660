@@ -121,6 +121,86 @@ func TestInterop_GenisoimageRead(t *testing.T) {
 	}
 }
 
+// TestInterop_RockRidgeRead masters a tree with genisoimage -R (Rock Ridge) so
+// the image carries real (case-preserved, long) names, POSIX modes and a
+// symlink, then verifies the driver surfaces them: ReadFile by real name,
+// ListDir real names, Stat mode bits, and ReadLink target.
+func TestInterop_RockRidgeRead(t *testing.T) {
+	tool := findTool("genisoimage")
+	if tool == "" {
+		tool = findTool("mkisofs")
+	}
+	if tool == "" {
+		t.Skip("genisoimage/mkisofs not available")
+	}
+
+	src := t.TempDir()
+	long := []byte("rock ridge keeps long, MixedCase names\n")
+	files := map[string][]byte{
+		"MixedCase Long Name.txt": long,
+		"dir/inner-file.md":       []byte("# nested\n"),
+	}
+	for name, content := range files {
+		p := filepath.Join(src, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("MixedCase Long Name.txt", filepath.Join(src, "link")); err != nil {
+		t.Fatal(err)
+	}
+
+	img := filepath.Join(t.TempDir(), "rr.iso")
+	cmd := exec.Command(tool, "-quiet", "-R", "-o", img, src)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%s -R: %v\n%s", filepath.Base(tool), err, out)
+	}
+
+	fs, err := OpenFile(img)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer fs.Close()
+
+	// Real (case-preserved, spaced) names round-trip.
+	for name, want := range files {
+		got, err := fs.ReadFile("/" + name)
+		if err != nil || !bytes.Equal(got, want) {
+			t.Errorf("ReadFile(/%s): err=%v equal=%v", name, err, bytes.Equal(got, want))
+		}
+	}
+
+	// Listing surfaces the real names.
+	entries, err := fs.ListDir("/")
+	if err != nil {
+		t.Fatalf("ListDir(/): %v", err)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.Name()] = true
+	}
+	for _, name := range []string{"MixedCase Long Name.txt", "dir", "link"} {
+		if !seen[name] {
+			t.Errorf("ListDir(/) missing %q (got %v)", name, keys(seen))
+		}
+	}
+
+	// Symlink target via Rock Ridge SL.
+	if tgt, err := fs.ReadLink("/link"); err != nil || tgt != "MixedCase Long Name.txt" {
+		t.Errorf("ReadLink(/link) = %q, %v; want %q", tgt, err, "MixedCase Long Name.txt")
+	}
+
+	// PX mode: a regular file reports S_IFREG.
+	if st, err := fs.Stat("/MixedCase Long Name.txt"); err != nil {
+		t.Errorf("Stat: %v", err)
+	} else if st.Mode()&0xF000 != sIFREG {
+		t.Errorf("Stat mode = 0x%04x, want S_IFREG bits", st.Mode())
+	}
+}
+
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

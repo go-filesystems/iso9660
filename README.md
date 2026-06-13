@@ -14,11 +14,11 @@ through the shared `github.com/go-filesystems/interface` `Filesystem` API.
 | Open / Close | ✅ | Primary Volume Descriptor (`CD001`) |
 | ReadFile | ✅ | Contiguous single-extent files (incl. multi-sector) |
 | ListDir | ✅ | Directory records; `.`/`..` filtered out |
-| Stat | ✅ | Synthesised mode + size + extent LBA |
-| Names | ✅ | Base ECMA-119: `;version` stripped, case-insensitive lookup |
-| Rock Ridge (POSIX names/perms/symlinks) | ⏳ | Planned |
+| Stat | ✅ | Rock Ridge POSIX mode when present, else synthesised; size + extent LBA |
+| Names | ✅ | Rock Ridge real names when present; else base ECMA-119 (`;version` stripped, case-insensitive) |
+| Rock Ridge (POSIX names/perms/symlinks) | ✅ | `SP`/`NM`/`PX`/`SL`; `CE` continuation + deep-dir relocation not yet |
+| ReadLink / symlinks | ✅ | Rock Ridge `SL` targets |
 | Joliet (UCS-2 long names) | ⏳ | Planned |
-| ReadLink / symlinks | ❌ | Requires Rock Ridge (planned) |
 | Multi-extent files | ❌ | Returns an error (planned) |
 | Write operations | ❌ | Read-only format; mutators return `ErrReadOnly` |
 
@@ -47,6 +47,11 @@ entries, err := fs.ListDir("/")
 ## Limitations
 
 - Read-only (the on-disk format is read-only by design).
-- Base ECMA-119 only so far: Rock Ridge and Joliet extensions are not yet decoded,
-  so names appear uppercased with the version suffix stripped.
+- Rock Ridge (`SP`/`NM`/`PX`/`SL`) is decoded; the `CE` continuation area and
+  deep-directory relocation (`CL`/`PL`/`RE`) are not, so entries that overflow
+  into a continuation area may be truncated.
+- Joliet (UCS-2 long names via the supplementary volume descriptor) is not yet
+  decoded; without Rock Ridge or Joliet, names appear uppercased.
+- Multi-extent files are not supported.
+- Path resolution does not follow symlinks (use `ReadLink`).
 - Intended for tooling and testing.

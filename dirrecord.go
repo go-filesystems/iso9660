@@ -25,6 +25,7 @@ type dirRecord struct {
 	Flags     uint8
 	rawName   []byte // raw file identifier
 	Name      string // cleaned name (version + trailing dot stripped)
+	sysUse    []byte // System Use Area (SUSP / Rock Ridge entries)
 }
 
 func (r dirRecord) isDir() bool { return r.Flags&flagDirectory != 0 }
@@ -57,6 +58,15 @@ func parseDirRecord(buf []byte) (dirRecord, int, error) {
 		rawName:   append([]byte(nil), buf[33:33+nameLen]...),
 	}
 	rec.Name = cleanName(rec.rawName)
+	// The System Use Area follows the name, plus a padding byte when the name
+	// length is even (16-bit field alignment).
+	suaStart := 33 + nameLen
+	if nameLen%2 == 0 {
+		suaStart++
+	}
+	if suaStart < recLen {
+		rec.sysUse = append([]byte(nil), buf[suaStart:recLen]...)
+	}
 	return rec, recLen, nil
 }
 

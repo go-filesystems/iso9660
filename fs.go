@@ -23,10 +23,11 @@ const (
 
 // FS is an opened, read-only ISO 9660 filesystem.
 type FS struct {
-	rs     io.ReaderAt
-	size   int64
-	vol    *Volume
-	closer io.Closer
+	rs       io.ReaderAt
+	size     int64
+	vol      *Volume
+	suspSkip int // SUSP LEN_SKP: bytes to skip at the start of each System Use Area
+	closer   io.Closer
 }
 
 var _ filesystem.Filesystem = (*FS)(nil)
@@ -43,7 +44,39 @@ func Open(rs io.ReaderAt, size int64) (*FS, error) {
 	if c, ok := rs.(io.Closer); ok {
 		fs.closer = c
 	}
+	fs.suspSkip = fs.detectSUSPSkip()
 	return fs, nil
+}
+
+// detectSUSPSkip reads the root "." entry and returns the SUSP LEN_SKP (0 when
+// the image carries no SP entry / no Rock Ridge).
+func (fs *FS) detectSUSPSkip() int {
+	entries, err := readDirRecords(fs.rs, fs.vol, fs.vol.Root)
+	if err != nil {
+		return 0
+	}
+	for _, e := range entries {
+		if len(e.rawName) == 1 && e.rawName[0] == 0x00 { // "." entry
+			return detectSUSPSkip(e.sysUse)
+		}
+	}
+	return 0
+}
+
+// rrFor parses the Rock Ridge attributes of a record (past the SUSP skip).
+func (fs *FS) rrFor(rec dirRecord) rrInfo {
+	if len(rec.sysUse) <= fs.suspSkip {
+		return rrInfo{}
+	}
+	return parseRockRidge(rec.sysUse[fs.suspSkip:])
+}
+
+// effectiveName is the Rock Ridge name when present, else the ISO 9660 name.
+func (fs *FS) effectiveName(rec dirRecord) string {
+	if rr := fs.rrFor(rec); rr.hasName {
+		return rr.name
+	}
+	return rec.Name
 }
 
 // OpenFile opens path read-only and wires it into Open.
@@ -88,15 +121,21 @@ func (fs *FS) resolve(path string) (dirRecord, error) {
 		if err != nil {
 			return dirRecord{}, err
 		}
+		// Prefer an exact match on the effective (Rock Ridge or ISO) name;
+		// fall back to case-insensitive, since base ISO names are uppercased.
 		found := false
 		for _, e := range entries {
-			if e.isSpecial() {
-				continue
-			}
-			if strings.EqualFold(e.Name, name) {
-				cur = e
-				found = true
+			if !e.isSpecial() && fs.effectiveName(e) == name {
+				cur, found = e, true
 				break
+			}
+		}
+		if !found {
+			for _, e := range entries {
+				if !e.isSpecial() && strings.EqualFold(fs.effectiveName(e), name) {
+					cur, found = e, true
+					break
+				}
 			}
 		}
 		if !found {
@@ -135,7 +174,7 @@ func (fs *FS) ListDir(path string) ([]filesystem.DirEntry, error) {
 		if e.isDir() {
 			ftype = 2 // directory
 		}
-		out = append(out, filesystem.NewDirEntry(uint64(e.ExtentLBA), e.Name, ftype))
+		out = append(out, filesystem.NewDirEntry(uint64(e.ExtentLBA), fs.effectiveName(e), ftype))
 	}
 	return out, nil
 }
@@ -147,6 +186,10 @@ func (fs *FS) Stat(path string) (filesystem.Stat, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Prefer the Rock Ridge POSIX mode; otherwise synthesise from the type.
+	if rr := fs.rrFor(rec); rr.hasMode {
+		return filesystem.NewStat(rr.mode, uint64(rec.Size), uint64(rec.ExtentLBA)), nil
+	}
 	mode := uint16(modeFileDefault)
 	if rec.isDir() {
 		mode = modeDirDefault
@@ -154,11 +197,15 @@ func (fs *FS) Stat(path string) (filesystem.Stat, error) {
 	return filesystem.NewStat(mode, uint64(rec.Size), uint64(rec.ExtentLBA)), nil
 }
 
-// ReadLink always fails on base ISO 9660: symlinks require the Rock Ridge
-// extension, which is not yet decoded.
+// ReadLink returns the target of a Rock Ridge symbolic link. Base ISO 9660
+// without Rock Ridge has no symlinks, so ReadLink reports ErrNotSymlink.
 func (fs *FS) ReadLink(path string) (string, error) {
-	if _, err := fs.resolve(path); err != nil {
+	rec, err := fs.resolve(path)
+	if err != nil {
 		return "", err
+	}
+	if rr := fs.rrFor(rec); rr.isSymlink {
+		return rr.symlink, nil
 	}
 	return "", fmt.Errorf("%w: %s", ErrNotSymlink, path)
 }
