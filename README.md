@@ -1,0 +1,52 @@
+# iso9660
+
+Pure-Go, read-only access to **ISO 9660** (ECMA-119) CD/DVD images — no root, no external tools, no CGO.
+
+ISO 9660 is the optical-disc filesystem used by `.iso` images produced by
+`mkisofs` / `genisoimage` / `xorriso`. This driver reads the Primary Volume
+Descriptor, walks directory records and reads file extents, exposing the image
+through the shared `github.com/go-filesystems/interface` `Filesystem` API.
+
+## Support summary
+
+| Feature | Status | Notes |
+|---|---:|---|
+| Open / Close | ✅ | Primary Volume Descriptor (`CD001`) |
+| ReadFile | ✅ | Contiguous single-extent files (incl. multi-sector) |
+| ListDir | ✅ | Directory records; `.`/`..` filtered out |
+| Stat | ✅ | Synthesised mode + size + extent LBA |
+| Names | ✅ | Base ECMA-119: `;version` stripped, case-insensitive lookup |
+| Rock Ridge (POSIX names/perms/symlinks) | ⏳ | Planned |
+| Joliet (UCS-2 long names) | ⏳ | Planned |
+| ReadLink / symlinks | ❌ | Requires Rock Ridge (planned) |
+| Multi-extent files | ❌ | Returns an error (planned) |
+| Write operations | ❌ | Read-only format; mutators return `ErrReadOnly` |
+
+## References
+
+- ECMA-119 (ISO 9660)
+- `mkisofs` / `genisoimage` / `xorriso`
+
+## Module
+
+```
+github.com/go-filesystems/iso9660
+```
+
+## Usage
+
+```go
+fs, err := iso9660.OpenFile("image.iso")
+if err != nil { /* ... */ }
+defer fs.Close()
+
+data, err := fs.ReadFile("/BOOT/GRUB/GRUB.CFG")
+entries, err := fs.ListDir("/")
+```
+
+## Limitations
+
+- Read-only (the on-disk format is read-only by design).
+- Base ECMA-119 only so far: Rock Ridge and Joliet extensions are not yet decoded,
+  so names appear uppercased with the version suffix stripped.
+- Intended for tooling and testing.
