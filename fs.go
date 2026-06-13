@@ -80,12 +80,34 @@ func (fs *FS) primarySUSP() (skip int, hasRR bool) {
 	return 0, false
 }
 
-// rrFor parses the Rock Ridge attributes of a record (past the SUSP skip).
+// rrFor parses the Rock Ridge attributes of a record, following any SUSP CE
+// continuation areas so long names / symlink targets are not truncated.
 func (fs *FS) rrFor(rec dirRecord) rrInfo {
 	if len(rec.sysUse) <= fs.suspSkip {
 		return rrInfo{}
 	}
-	return parseRockRidge(rec.sysUse[fs.suspSkip:])
+	return parseRockRidge(fs.collectSUSP(rec.sysUse[fs.suspSkip:]))
+}
+
+// collectSUSP returns the System Use Area concatenated with every CE
+// continuation area it chains to (bounded, to tolerate corrupt images).
+func (fs *FS) collectSUSP(sua []byte) []byte {
+	out := append([]byte(nil), sua...)
+	cur := sua
+	for i := 0; i < 16; i++ {
+		block, offset, length, found := ceEntry(cur)
+		if !found || length == 0 || length > uint32(fs.vol.BlockSize) {
+			break
+		}
+		area := make([]byte, length)
+		off := int64(block)*int64(fs.vol.BlockSize) + int64(offset)
+		if _, err := fs.rs.ReadAt(area, off); err != nil {
+			break
+		}
+		out = append(out, area...)
+		cur = area
+	}
+	return out
 }
 
 // effectiveName resolves the display name for a record: the Rock Ridge name

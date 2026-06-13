@@ -46,6 +46,27 @@ const (
 
 const nmContinue = 0x01 // NM name continues in the next NM entry
 
+// ceEntry locates a SUSP CE (continuation area) entry within a System Use
+// Area: a block location, an offset within that block, and a length. Returns
+// found=false when no CE entry is present.
+func ceEntry(sua []byte) (block uint32, offset, length uint32, found bool) {
+	o := 0
+	for o+4 <= len(sua) {
+		sig0, sig1 := sua[o], sua[o+1]
+		l := int(sua[o+2])
+		if l < 4 || o+l > len(sua) {
+			break
+		}
+		// CE payload: block(both-endian u32 @0), offset(@8), length(@16).
+		if sig0 == 'C' && sig1 == 'E' && l >= 28 {
+			d := sua[o+4 : o+l]
+			return le32(d[0:]), le32(d[8:]), le32(d[16:]), true
+		}
+		o += l
+	}
+	return 0, 0, 0, false
+}
+
 // detectSUSPSkip inspects a root "." SUA for an SP entry and returns its
 // LEN_SKP (bytes to skip at the start of every SUA) and whether SP was found.
 // SP presence is SUSP's signal that the System Use Sharing Protocol — and

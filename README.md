@@ -16,7 +16,7 @@ through the shared `github.com/go-filesystems/interface` `Filesystem` API.
 | ListDir | ✅ | Directory records; `.`/`..` filtered out |
 | Stat | ✅ | Rock Ridge POSIX mode when present, else synthesised; size + extent LBA |
 | Names | ✅ | Rock Ridge real names when present; else base ECMA-119 (`;version` stripped, case-insensitive) |
-| Rock Ridge (POSIX names/perms/symlinks) | ✅ | `SP`/`NM`/`PX`/`SL`; `CE` continuation + deep-dir relocation not yet |
+| Rock Ridge (POSIX names/perms/symlinks) | ✅ | `SP`/`NM`/`PX`/`SL`/`CE` continuation; deep-dir relocation (`CL`/`PL`/`RE`) not yet |
 | ReadLink / symlinks | ✅ | Rock Ridge `SL` targets |
 | Joliet (UCS-2 long names) | ✅ | Supplementary VD; used when Rock Ridge is absent |
 | Multi-extent files | ❌ | Returns an error (planned) |
@@ -47,9 +47,8 @@ entries, err := fs.ListDir("/")
 ## Limitations
 
 - Read-only (the on-disk format is read-only by design).
-- Rock Ridge (`SP`/`NM`/`PX`/`SL`) is decoded; the `CE` continuation area and
-  deep-directory relocation (`CL`/`PL`/`RE`) are not, so entries that overflow
-  into a continuation area may be truncated.
+- Rock Ridge (`SP`/`NM`/`PX`/`SL`) is decoded, including `CE` continuation
+  areas; deep-directory relocation (`CL`/`PL`/`RE`) is not.
 - Joliet (UCS-2 long names) is decoded from the supplementary volume descriptor
   and used when Rock Ridge is absent; without either, names appear uppercased.
 - Multi-extent files are not supported.

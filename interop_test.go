@@ -201,6 +201,46 @@ func TestInterop_RockRidgeRead(t *testing.T) {
 	}
 }
 
+// TestInterop_RockRidgeCE forces a Rock Ridge SUSP continuation area: a
+// symlink whose target is long enough that its SL entry (plus NM/PX) overflows
+// the directory record's System Use Area into a CE block. Without CE handling
+// the target reads back truncated.
+func TestInterop_RockRidgeCE(t *testing.T) {
+	tool := findTool("genisoimage")
+	if tool == "" {
+		tool = findTool("mkisofs")
+	}
+	if tool == "" {
+		t.Skip("genisoimage/mkisofs not available")
+	}
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "target.txt"), []byte("x\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// ~230-char relative target: long enough to spill SUSP into a CE area.
+	longTarget := ""
+	for i := 0; i < 23; i++ {
+		longTarget += "abcdef/../" // 10 chars each → 230
+	}
+	longTarget += "target.txt"
+	if err := os.Symlink(longTarget, filepath.Join(src, "deeplink")); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(t.TempDir(), "ce.iso")
+	if out, err := exec.Command(tool, "-quiet", "-R", "-o", img, src).CombinedOutput(); err != nil {
+		t.Fatalf("%s -R: %v\n%s", filepath.Base(tool), err, out)
+	}
+	fs, err := OpenFile(img)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer fs.Close()
+	got, err := fs.ReadLink("/deeplink")
+	if err != nil || got != longTarget {
+		t.Errorf("ReadLink(/deeplink) = %q (len %d), %v; want len %d", got, len(got), err, len(longTarget))
+	}
+}
+
 // TestInterop_JolietRead masters a tree with genisoimage -J (Joliet, no Rock
 // Ridge), so real long/mixed-case names live only in the UCS-2 Joliet tree.
 // The driver must pick the Joliet tree and decode the names.
