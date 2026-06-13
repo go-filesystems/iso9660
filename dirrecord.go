@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"strings"
+	"unicode/utf16"
 )
 
 // File-flag bits in a directory record (offset 25).
@@ -88,6 +89,28 @@ func cleanName(raw []byte) string {
 	}
 	s = strings.TrimSuffix(s, ".")
 	return s
+}
+
+// jolietName decodes a Joliet directory-record identifier, which is stored as
+// big-endian UCS-2. The "." and ".." special entries remain single bytes.
+func jolietName(raw []byte) string {
+	if len(raw) == 1 {
+		switch raw[0] {
+		case 0x00:
+			return "."
+		case 0x01:
+			return ".."
+		}
+	}
+	u := make([]uint16, len(raw)/2)
+	for i := range u {
+		u[i] = binary.BigEndian.Uint16(raw[2*i:])
+	}
+	s := string(utf16.Decode(u))
+	if i := strings.IndexByte(s, ';'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.TrimSuffix(s, ".")
 }
 
 func le16(b []byte) uint16 { return binary.LittleEndian.Uint16(b) }

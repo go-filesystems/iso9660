@@ -201,6 +201,69 @@ func TestInterop_RockRidgeRead(t *testing.T) {
 	}
 }
 
+// TestInterop_JolietRead masters a tree with genisoimage -J (Joliet, no Rock
+// Ridge), so real long/mixed-case names live only in the UCS-2 Joliet tree.
+// The driver must pick the Joliet tree and decode the names.
+func TestInterop_JolietRead(t *testing.T) {
+	tool := findTool("genisoimage")
+	if tool == "" {
+		tool = findTool("mkisofs")
+	}
+	if tool == "" {
+		t.Skip("genisoimage/mkisofs not available")
+	}
+
+	src := t.TempDir()
+	want := []byte("joliet stores UCS-2 long names\n")
+	files := map[string][]byte{
+		"Joliet Long Name.txt": want,
+		"Folder/Inner File.md": []byte("# inner\n"),
+	}
+	for name, content := range files {
+		p := filepath.Join(src, name)
+		if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(p, content, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	img := filepath.Join(t.TempDir(), "joliet.iso")
+	if out, err := exec.Command(tool, "-quiet", "-J", "-o", img, src).CombinedOutput(); err != nil {
+		t.Fatalf("%s -J: %v\n%s", filepath.Base(tool), err, out)
+	}
+
+	fs, err := OpenFile(img)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer fs.Close()
+	if !fs.joliet {
+		t.Fatalf("expected the Joliet tree to be selected")
+	}
+
+	for name, content := range files {
+		got, err := fs.ReadFile("/" + name)
+		if err != nil || !bytes.Equal(got, content) {
+			t.Errorf("ReadFile(/%s): err=%v equal=%v", name, err, bytes.Equal(got, content))
+		}
+	}
+	entries, err := fs.ListDir("/")
+	if err != nil {
+		t.Fatalf("ListDir(/): %v", err)
+	}
+	seen := map[string]bool{}
+	for _, e := range entries {
+		seen[e.Name()] = true
+	}
+	for _, name := range []string{"Joliet Long Name.txt", "Folder"} {
+		if !seen[name] {
+			t.Errorf("ListDir(/) missing %q (got %v)", name, keys(seen))
+		}
+	}
+}
+
 func keys(m map[string]bool) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {

@@ -26,7 +26,9 @@ type FS struct {
 	rs       io.ReaderAt
 	size     int64
 	vol      *Volume
-	suspSkip int // SUSP LEN_SKP: bytes to skip at the start of each System Use Area
+	root     dirRecord // the directory tree actually traversed
+	joliet   bool      // root is the Joliet (UCS-2) tree
+	suspSkip int       // SUSP LEN_SKP: bytes to skip at the start of each System Use Area
 	closer   io.Closer
 }
 
@@ -44,23 +46,38 @@ func Open(rs io.ReaderAt, size int64) (*FS, error) {
 	if c, ok := rs.(io.Closer); ok {
 		fs.closer = c
 	}
-	fs.suspSkip = fs.detectSUSPSkip()
+	fs.chooseTree()
 	return fs, nil
 }
 
-// detectSUSPSkip reads the root "." entry and returns the SUSP LEN_SKP (0 when
-// the image carries no SP entry / no Rock Ridge).
-func (fs *FS) detectSUSPSkip() int {
-	entries, err := readDirRecords(fs.rs, fs.vol, fs.vol.Root)
+// chooseTree selects which directory tree to traverse and how to read names.
+// Precedence: a Rock Ridge primary tree (POSIX names/perms/symlinks) wins;
+// otherwise a Joliet (UCS-2 long names) tree; otherwise the base primary tree.
+func (fs *FS) chooseTree() {
+	skip, hasRR := fs.primarySUSP()
+	switch {
+	case hasRR:
+		fs.root, fs.suspSkip, fs.joliet = fs.vol.pvdRoot, skip, false
+	case fs.vol.hasJoliet:
+		fs.root, fs.joliet = fs.vol.jolietRoot, true
+	default:
+		fs.root = fs.vol.pvdRoot
+	}
+}
+
+// primarySUSP reads the primary-tree root "." entry and returns its SUSP skip
+// and whether Rock Ridge (an SP entry) is present.
+func (fs *FS) primarySUSP() (skip int, hasRR bool) {
+	entries, err := readDirRecords(fs.rs, fs.vol, fs.vol.pvdRoot)
 	if err != nil {
-		return 0
+		return 0, false
 	}
 	for _, e := range entries {
 		if len(e.rawName) == 1 && e.rawName[0] == 0x00 { // "." entry
 			return detectSUSPSkip(e.sysUse)
 		}
 	}
-	return 0
+	return 0, false
 }
 
 // rrFor parses the Rock Ridge attributes of a record (past the SUSP skip).
@@ -71,10 +88,15 @@ func (fs *FS) rrFor(rec dirRecord) rrInfo {
 	return parseRockRidge(rec.sysUse[fs.suspSkip:])
 }
 
-// effectiveName is the Rock Ridge name when present, else the ISO 9660 name.
+// effectiveName resolves the display name for a record: the Rock Ridge name
+// when present, else the UCS-2 Joliet name when traversing the Joliet tree,
+// else the base ISO 9660 name.
 func (fs *FS) effectiveName(rec dirRecord) string {
 	if rr := fs.rrFor(rec); rr.hasName {
 		return rr.name
+	}
+	if fs.joliet {
+		return jolietName(rec.rawName)
 	}
 	return rec.Name
 }
@@ -112,7 +134,7 @@ func (fs *FS) Close() error {
 // resolve walks an absolute path from the root directory record. Component
 // matching is case-insensitive because base ISO 9660 stores names uppercased.
 func (fs *FS) resolve(path string) (dirRecord, error) {
-	cur := fs.vol.Root
+	cur := fs.root
 	for _, name := range splitPath(path) {
 		if !cur.isDir() {
 			return dirRecord{}, fmt.Errorf("%w: %q", ErrNotDirectory, name)

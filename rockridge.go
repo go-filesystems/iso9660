@@ -47,9 +47,10 @@ const (
 const nmContinue = 0x01 // NM name continues in the next NM entry
 
 // detectSUSPSkip inspects a root "." SUA for an SP entry and returns its
-// LEN_SKP (the number of bytes to skip at the start of every SUA). Returns 0
-// when no SP is present.
-func detectSUSPSkip(sua []byte) int {
+// LEN_SKP (bytes to skip at the start of every SUA) and whether SP was found.
+// SP presence is SUSP's signal that the System Use Sharing Protocol — and
+// therefore Rock Ridge — is in use.
+func detectSUSPSkip(sua []byte) (skip int, found bool) {
 	o := 0
 	for o+4 <= len(sua) {
 		sig0, sig1 := sua[o], sua[o+1]
@@ -60,12 +61,12 @@ func detectSUSPSkip(sua []byte) int {
 		if sig0 == 'S' && sig1 == 'P' && length >= 7 {
 			// data: check bytes 0xBE 0xEF, then LEN_SKP.
 			if sua[o+4] == 0xBE && sua[o+5] == 0xEF {
-				return int(sua[o+6])
+				return int(sua[o+6]), true
 			}
 		}
 		o += length
 	}
-	return 0
+	return 0, false
 }
 
 // parseRockRidge decodes the NM / PX / SL entries from a SUA (already advanced
