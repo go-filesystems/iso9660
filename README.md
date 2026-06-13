@@ -52,5 +52,4 @@ entries, err := fs.ListDir("/")
 - Joliet (UCS-2 long names) is decoded from the supplementary volume descriptor
   and used when Rock Ridge is absent; without either, names appear uppercased.
 - Multi-extent files are not supported.
-- Path resolution does not follow symlinks (use `ReadLink`).
 - Intended for tooling and testing.

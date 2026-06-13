@@ -153,11 +153,32 @@ func (fs *FS) Close() error {
 	return nil
 }
 
-// resolve walks an absolute path from the root directory record. Component
-// matching is case-insensitive because base ISO 9660 stores names uppercased.
+// maxSymlinkHops bounds Rock Ridge symlink resolution per path lookup.
+const maxSymlinkHops = 40
+
+// resolve walks an absolute path from the root, following Rock Ridge symlinks
+// (including a final-component symlink). Use resolveNoFollow for lstat-style
+// semantics where the final symlink must not be followed.
 func (fs *FS) resolve(path string) (dirRecord, error) {
-	cur := fs.root
-	for _, name := range splitPath(path) {
+	return fs.resolveFrom(fs.root, splitPath(path), true, 0)
+}
+
+// resolveNoFollow is like resolve but does not follow a symlink that is the
+// final path component (so ReadLink sees the link itself).
+func (fs *FS) resolveNoFollow(path string) (dirRecord, error) {
+	return fs.resolveFrom(fs.root, splitPath(path), false, 0)
+}
+
+// resolveFrom walks parts from start. Component matching prefers an exact match
+// on the effective (Rock Ridge / Joliet / ISO) name, then case-insensitive
+// (base ISO names are uppercased). Intermediate Rock Ridge symlinks are always
+// followed; the final one is followed only when followFinal is set.
+func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, hops int) (dirRecord, error) {
+	if hops > maxSymlinkHops {
+		return dirRecord{}, ErrTooManyLinks
+	}
+	cur := start
+	for i, name := range parts {
 		if !cur.isDir() {
 			return dirRecord{}, fmt.Errorf("%w: %q", ErrNotDirectory, name)
 		}
@@ -165,19 +186,17 @@ func (fs *FS) resolve(path string) (dirRecord, error) {
 		if err != nil {
 			return dirRecord{}, err
 		}
-		// Prefer an exact match on the effective (Rock Ridge or ISO) name;
-		// fall back to case-insensitive, since base ISO names are uppercased.
-		found := false
+		child, found := dirRecord{}, false
 		for _, e := range entries {
 			if !e.isSpecial() && fs.effectiveName(e) == name {
-				cur, found = e, true
+				child, found = e, true
 				break
 			}
 		}
 		if !found {
 			for _, e := range entries {
 				if !e.isSpecial() && strings.EqualFold(fs.effectiveName(e), name) {
-					cur, found = e, true
+					child, found = e, true
 					break
 				}
 			}
@@ -185,6 +204,18 @@ func (fs *FS) resolve(path string) (dirRecord, error) {
 		if !found {
 			return dirRecord{}, fmt.Errorf("%w: %q", ErrNotFound, name)
 		}
+		last := i == len(parts)-1
+		if rr := fs.rrFor(child); rr.isSymlink && (!last || followFinal) {
+			base := cur // relative target resolves against the containing dir
+			if strings.HasPrefix(rr.symlink, "/") {
+				base = fs.root
+			}
+			child, err = fs.resolveFrom(base, splitPath(rr.symlink), true, hops+1)
+			if err != nil {
+				return dirRecord{}, err
+			}
+		}
+		cur = child
 	}
 	return cur, nil
 }
@@ -244,7 +275,7 @@ func (fs *FS) Stat(path string) (filesystem.Stat, error) {
 // ReadLink returns the target of a Rock Ridge symbolic link. Base ISO 9660
 // without Rock Ridge has no symlinks, so ReadLink reports ErrNotSymlink.
 func (fs *FS) ReadLink(path string) (string, error) {
-	rec, err := fs.resolve(path)
+	rec, err := fs.resolveNoFollow(path)
 	if err != nil {
 		return "", err
 	}

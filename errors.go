@@ -37,6 +37,10 @@ var (
 	// (they require the Rock Ridge extension, not yet implemented).
 	ErrNotSymlink = errors.New("iso9660: not a symbolic link")
 
+	// ErrTooManyLinks is returned when path resolution exceeds the symlink hop
+	// limit, indicating a loop.
+	ErrTooManyLinks = errors.New("iso9660: too many symbolic link traversals")
+
 	// ErrCorrupt is returned when an on-disk structure fails a sanity check.
 	ErrCorrupt = errors.New("iso9660: corrupt image")
 )

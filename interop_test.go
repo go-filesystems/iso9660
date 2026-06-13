@@ -241,6 +241,53 @@ func TestInterop_RockRidgeCE(t *testing.T) {
 	}
 }
 
+// TestInterop_RockRidgeSymlinkFollow verifies that path resolution follows a
+// Rock Ridge symlink to a directory mid-path (ReadFile/Stat through it), while
+// ReadLink on the link still returns the target unfollowed.
+func TestInterop_RockRidgeSymlinkFollow(t *testing.T) {
+	tool := findTool("genisoimage")
+	if tool == "" {
+		tool = findTool("mkisofs")
+	}
+	if tool == "" {
+		t.Skip("genisoimage/mkisofs not available")
+	}
+	src := t.TempDir()
+	want := []byte("reached through a symlinked directory\n")
+	if err := os.MkdirAll(filepath.Join(src, "real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "real", "data.txt"), want, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// "alias" -> "real" (relative symlink to a directory).
+	if err := os.Symlink("real", filepath.Join(src, "alias")); err != nil {
+		t.Fatal(err)
+	}
+	img := filepath.Join(t.TempDir(), "sl.iso")
+	if out, err := exec.Command(tool, "-quiet", "-R", "-o", img, src).CombinedOutput(); err != nil {
+		t.Fatalf("%s -R: %v\n%s", filepath.Base(tool), err, out)
+	}
+	fs, err := OpenFile(img)
+	if err != nil {
+		t.Fatalf("OpenFile: %v", err)
+	}
+	defer fs.Close()
+
+	// ReadFile traverses through the symlinked directory.
+	if got, err := fs.ReadFile("/alias/data.txt"); err != nil || !bytes.Equal(got, want) {
+		t.Errorf("ReadFile(/alias/data.txt): err=%v equal=%v", err, bytes.Equal(got, want))
+	}
+	// ListDir through the symlinked directory.
+	if entries, err := fs.ListDir("/alias"); err != nil || len(entries) != 1 || entries[0].Name() != "data.txt" {
+		t.Errorf("ListDir(/alias): err=%v len=%d", err, len(entries))
+	}
+	// ReadLink does not follow the final component.
+	if tgt, err := fs.ReadLink("/alias"); err != nil || tgt != "real" {
+		t.Errorf("ReadLink(/alias) = %q, %v; want %q", tgt, err, "real")
+	}
+}
+
 // TestInterop_JolietRead masters a tree with genisoimage -J (Joliet, no Rock
 // Ridge), so real long/mixed-case names live only in the UCS-2 Joliet tree.
 // The driver must pick the Joliet tree and decode the names.
