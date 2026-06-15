@@ -7,9 +7,10 @@
 // file extents. ISO 9660 is a read-only format; every mutating method of
 // filesystem.Filesystem returns ErrReadOnly.
 //
-// The base ECMA-119 layer is implemented (uppercase ;version-suffixed names).
-// The Rock Ridge (POSIX names/perms/symlinks) and Joliet (UCS-2 long names)
-// extensions are not yet decoded.
+// The base ECMA-119 layer (uppercase ;version-suffixed names) plus the Rock
+// Ridge (POSIX long names/permissions/symlinks, including CE continuation
+// areas) and Joliet (UCS-2 long names) extensions are decoded. When a tree
+// carries Rock Ridge it takes precedence, then Joliet, then the base tree.
 package iso9660
 
 import "errors"
@@ -33,8 +34,9 @@ var (
 	// ErrNotRegular is returned when ReadFile targets a non-regular file.
 	ErrNotRegular = errors.New("iso9660: not a regular file")
 
-	// ErrNotSymlink is returned by ReadLink; base ISO 9660 has no symlinks
-	// (they require the Rock Ridge extension, not yet implemented).
+	// ErrNotSymlink is returned by ReadLink when the target is not a symlink.
+	// Symlinks come from the Rock Ridge SL entry (base ISO 9660 has none), so
+	// this is also what ReadLink returns on a plain (non-Rock-Ridge) image.
 	ErrNotSymlink = errors.New("iso9660: not a symbolic link")
 
 	// ErrTooManyLinks is returned when path resolution exceeds the symlink hop
