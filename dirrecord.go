@@ -18,15 +18,24 @@ const (
 	flagMultiExt  = 0x80 // record is not the final extent of the file
 )
 
+// extent is one contiguous run of file data: a starting logical block address
+// and a byte length. A base ISO 9660 file is a single extent; a multi-extent
+// file (ECMA-119 §6.5.1) is the concatenation of several.
+type extent struct {
+	lba  uint32
+	size uint32
+}
+
 // dirRecord is a decoded ISO 9660 directory record.
 type dirRecord struct {
 	Length    uint8  // total on-disk record length; 0 marks end-of-sector padding
 	ExtentLBA uint32 // logical block address of the file/dir extent
-	Size      uint32 // data length in bytes
+	Size      uint32 // data length in bytes (total across all extents, when merged)
 	Flags     uint8
-	rawName   []byte // raw file identifier
-	Name      string // cleaned name (version + trailing dot stripped)
-	sysUse    []byte // System Use Area (SUSP / Rock Ridge entries)
+	rawName   []byte   // raw file identifier
+	Name      string   // cleaned name (version + trailing dot stripped)
+	sysUse    []byte   // System Use Area (SUSP / Rock Ridge entries)
+	extents   []extent // every extent of the file, in order (nil for a single-extent record)
 }
 
 func (r dirRecord) isDir() bool { return r.Flags&flagDirectory != 0 }
