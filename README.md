@@ -1,4 +1,10 @@
+<p align="center"><img src="https://raw.githubusercontent.com/go-filesystems/brand/main/social/go-filesystems-iso9660.png" alt="go-filesystems/iso9660" width="720"></p>
+
 # iso9660
+
+[![Go Reference](https://pkg.go.dev/badge/github.com/go-filesystems/iso9660.svg)](https://pkg.go.dev/github.com/go-filesystems/iso9660)
+[![License: BSD-3-Clause](https://img.shields.io/badge/License-BSD%203--Clause-blue.svg)](https://opensource.org/licenses/BSD-3-Clause)
+[![CI](https://github.com/go-filesystems/iso9660/actions/workflows/ci.yml/badge.svg)](https://github.com/go-filesystems/iso9660/actions/workflows/ci.yml)
 
 Pure-Go, read-only access to **ISO 9660** (ECMA-119) CD/DVD images — no root, no external tools, no CGO.
 
