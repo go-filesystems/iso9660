@@ -1,16 +1,23 @@
 // Copyright (c) 2026, go-filesystems
 // SPDX-License-Identifier: BSD-3-Clause
 
-// Package iso9660 is a pure-Go, read-only driver for the ISO 9660 (ECMA-119)
-// CD/DVD image format produced by mkisofs/genisoimage/xorriso. It reads the
-// Primary Volume Descriptor, walks directory records, and reads contiguous
-// file extents. ISO 9660 is a read-only format; every mutating method of
-// filesystem.Filesystem returns ErrReadOnly.
+// Package iso9660 is a pure-Go driver for the ISO 9660 (ECMA-119) CD/DVD image
+// format produced by mkisofs/genisoimage/xorriso. It reads the Primary Volume
+// Descriptor, walks directory records, and reads contiguous file extents.
 //
-// The base ECMA-119 layer (uppercase ;version-suffixed names) plus the Rock
-// Ridge (POSIX long names/permissions/symlinks, including CE continuation
+// On read, the base ECMA-119 layer (uppercase ;version-suffixed names) plus the
+// Rock Ridge (POSIX long names/permissions/symlinks, including CE continuation
 // areas) and Joliet (UCS-2 long names) extensions are decoded. When a tree
 // carries Rock Ridge it takes precedence, then Joliet, then the base tree.
+//
+// An existing image is read-only once mastered: every mutating method of
+// filesystem.Filesystem (WriteFile, MkDir, ...) returns ErrReadOnly. To author
+// a new image, use Builder (NewBuilder / AddDir / AddFile / WriteTo), which
+// masters a base ECMA-119 image — system area, Primary Volume Descriptor,
+// Volume Descriptor Set Terminator, Type-L/Type-M path tables, directory
+// extents and file data. Writing covers the base ECMA-119 layer (interchange
+// level 1); the Rock Ridge and Joliet extensions are decoded on read but not
+// yet written.
 package iso9660
 
 import "errors"
@@ -45,4 +52,13 @@ var (
 
 	// ErrCorrupt is returned when an on-disk structure fails a sanity check.
 	ErrCorrupt = errors.New("iso9660: corrupt image")
+
+	// ErrInvalidName is returned by the Builder when an Add* path is empty or
+	// otherwise unusable.
+	ErrInvalidName = errors.New("iso9660: invalid name")
+
+	// ErrExists is returned by the Builder when an Add* path collides with an
+	// entry of the wrong type (a file where a directory is needed, or vice
+	// versa).
+	ErrExists = errors.New("iso9660: path already exists")
 )
