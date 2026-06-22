@@ -15,9 +15,9 @@ import (
 // Unix mode type bits used to synthesise a Stat mode (base ISO 9660 carries no
 // POSIX permissions; those would come from Rock Ridge).
 const (
-	sIFDIR = 0x4000
-	sIFREG = 0x8000
-	modeDirDefault = sIFDIR | 0o555
+	sIFDIR          = 0x4000
+	sIFREG          = 0x8000
+	modeDirDefault  = sIFDIR | 0o555
 	modeFileDefault = sIFREG | 0o444
 )
 
@@ -68,7 +68,7 @@ func (fs *FS) chooseTree() {
 // primarySUSP reads the primary-tree root "." entry and returns its SUSP skip
 // and whether Rock Ridge (an SP entry) is present.
 func (fs *FS) primarySUSP() (skip int, hasRR bool) {
-	entries, err := readDirRecords(fs.rs, fs.vol, fs.vol.pvdRoot)
+	entries, err := readDirRecords(fs.rs, fs.vol, fs.vol.pvdRoot, allocCeiling(fs.size))
 	if err != nil {
 		return 0, false
 	}
@@ -182,7 +182,7 @@ func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, hop
 		if !cur.isDir() {
 			return dirRecord{}, fmt.Errorf("%w: %q", ErrNotDirectory, name)
 		}
-		entries, err := readDirRecords(fs.rs, fs.vol, cur)
+		entries, err := readDirRecords(fs.rs, fs.vol, cur, allocCeiling(fs.size))
 		if err != nil {
 			return dirRecord{}, err
 		}
@@ -226,7 +226,7 @@ func (fs *FS) ReadFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	return readFile(fs.rs, fs.vol, rec)
+	return readFile(fs.rs, fs.vol, rec, allocCeiling(fs.size))
 }
 
 // ListDir enumerates the directory at path, excluding the "." and ".."
@@ -236,7 +236,7 @@ func (fs *FS) ListDir(path string) ([]filesystem.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := readDirRecords(fs.rs, fs.vol, rec)
+	entries, err := readDirRecords(fs.rs, fs.vol, rec, allocCeiling(fs.size))
 	if err != nil {
 		return nil, err
 	}
@@ -274,6 +274,17 @@ func (fs *FS) Stat(path string) (filesystem.Stat, error) {
 
 // ReadLink returns the target of a Rock Ridge symbolic link. Base ISO 9660
 // without Rock Ridge has no symlinks, so ReadLink reports ErrNotSymlink.
+//
+// SECURITY: the returned target is the raw, UNTRUSTED Rock Ridge SL value from
+// the image. It may contain ".." components or an absolute path, so a
+// malicious image can point it anywhere. In-driver path resolution
+// (resolveFrom) is unaffected — it filters "."/".." and rebases absolute
+// targets against the image root, and caps symlink hops at maxSymlinkHops — so
+// the link can never escape the image when traversed through this package.
+// Callers that interpret the returned string against the HOST filesystem (for
+// example to recreate the link on disk during extraction) MUST sanitise it
+// first; otherwise a "../../etc/passwd" or "/etc/passwd" target is a path
+// traversal vector.
 func (fs *FS) ReadLink(path string) (string, error) {
 	rec, err := fs.resolveNoFollow(path)
 	if err != nil {

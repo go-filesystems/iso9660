@@ -27,12 +27,12 @@ import "encoding/binary"
 
 // rrInfo holds the Rock Ridge attributes extracted from a record's SUA.
 type rrInfo struct {
-	name       string
-	hasName    bool
-	mode       uint16
-	hasMode    bool
-	symlink    string
-	isSymlink  bool
+	name      string
+	hasName   bool
+	mode      uint16
+	hasMode   bool
+	symlink   string
+	isSymlink bool
 }
 
 // SL component flags.

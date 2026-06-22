@@ -7,18 +7,43 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+
+	"github.com/go-volumes/safeio"
 )
+
+// allocCeiling returns the upper bound for a single allocation derived from an
+// attacker-controlled on-disk length field. When the backing image size is
+// known (size >= 0) that is the natural ceiling: no structure can be larger
+// than the whole image. When it is unknown (Open called with size = -1) we
+// fall back to a generous but finite cap so a forged 4 GiB length still fails
+// gracefully instead of OOM-ing the host.
+func allocCeiling(size int64) int64 {
+	if size >= 0 {
+		return size
+	}
+	return maxUnknownAlloc
+}
+
+// maxUnknownAlloc bounds a single allocation when the image size is unknown.
+// 1 GiB is far beyond any legitimate ISO 9660 directory extent or single file
+// extent (a base file extent length is a u32, capped at 4 GiB) yet still small
+// enough that a forged length cannot exhaust host memory.
+const maxUnknownAlloc = 1 << 30
 
 // readDirRecords reads and parses the directory whose extent is described by
 // rec. ISO 9660 directory records never span a logical sector, so a zero
 // length byte means "skip to the next sector". The "." and ".." entries are
-// included; callers filter them as needed.
-func readDirRecords(rs io.ReaderAt, vol *Volume, rec dirRecord) ([]dirRecord, error) {
+// included; callers filter them as needed. maxAlloc bounds the directory
+// extent allocation against a malicious Size field (typically the image size).
+func readDirRecords(rs io.ReaderAt, vol *Volume, rec dirRecord, maxAlloc int64) ([]dirRecord, error) {
 	if !rec.isDir() {
 		return nil, ErrNotDirectory
 	}
 	bs := int(vol.BlockSize)
-	data := make([]byte, rec.Size)
+	data, err := safeio.MakeBytes(int64(rec.Size), maxAlloc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: dir extent size %d: %w", ErrCorrupt, rec.Size, err)
+	}
 	if _, err := rs.ReadAt(data, int64(rec.ExtentLBA)*int64(bs)); err != nil {
 		return nil, fmt.Errorf("iso9660: read dir extent @LBA %d: %w", rec.ExtentLBA, err)
 	}
@@ -105,8 +130,10 @@ func mergeMultiExtent(in []dirRecord) ([]dirRecord, error) {
 // readFile returns the full contents of the file described by rec. A base
 // ISO 9660 file occupies a single contiguous extent; a multi-extent file
 // (ECMA-119 §6.5.1, recorded as a run of consecutive records merged by
-// mergeMultiExtent) is the in-order concatenation of its extents.
-func readFile(rs io.ReaderAt, vol *Volume, rec dirRecord) ([]byte, error) {
+// mergeMultiExtent) is the in-order concatenation of its extents. maxAlloc
+// bounds the result allocation against a malicious Size field (typically the
+// image size).
+func readFile(rs io.ReaderAt, vol *Volume, rec dirRecord, maxAlloc int64) ([]byte, error) {
 	if rec.isDir() {
 		return nil, ErrNotRegular
 	}
@@ -114,13 +141,22 @@ func readFile(rs io.ReaderAt, vol *Volume, rec dirRecord) ([]byte, error) {
 	if exts == nil {
 		exts = []extent{{lba: rec.ExtentLBA, size: rec.Size}}
 	}
-	data := make([]byte, rec.Size)
+	data, err := safeio.MakeBytes(int64(rec.Size), maxAlloc)
+	if err != nil {
+		return nil, fmt.Errorf("%w: file size %d: %w", ErrCorrupt, rec.Size, err)
+	}
 	off := 0
 	for _, e := range exts {
 		if e.size == 0 {
 			continue
 		}
-		if _, err := rs.ReadAt(data[off:off+int(e.size)], int64(e.lba)*int64(vol.BlockSize)); err != nil {
+		// Defend against a forged extent list whose sizes overrun the merged
+		// Size (a slice-bounds panic otherwise): validate before slicing.
+		dst, err := safeio.Slice(data, off, int(e.size))
+		if err != nil {
+			return nil, fmt.Errorf("%w: file extent @LBA %d: %w", ErrCorrupt, e.lba, err)
+		}
+		if _, err := rs.ReadAt(dst, int64(e.lba)*int64(vol.BlockSize)); err != nil {
 			return nil, fmt.Errorf("iso9660: read file extent @LBA %d: %w", e.lba, err)
 		}
 		off += int(e.size)
