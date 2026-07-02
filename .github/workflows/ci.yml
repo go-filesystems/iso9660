@@ -12,8 +12,9 @@ permissions:
 
 env:
   # The interop test-suite masters real images with genisoimage and reads them
-  # back, so the coverage figure is meaningful only when that tool is present.
-  COVERAGE_MIN: "70.0"
+  # back, adding coverage when that tool is present; the in-memory and embedded
+  # fixtures keep the read path well above this floor even when it is absent.
+  COVERAGE_MIN: "95.0"
 
 jobs:
   # Native runners: full build + test (race + coverage). genisoimage is
