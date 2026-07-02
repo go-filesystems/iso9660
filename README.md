@@ -18,14 +18,14 @@ through the shared `github.com/go-filesystems/interface` `Filesystem` API.
 | Feature | Status | Notes |
 |---|---:|---|
 | Open / Close | ✅ | Primary Volume Descriptor (`CD001`) |
-| ReadFile | ✅ | Contiguous single-extent files (incl. multi-sector) |
+| ReadFile | ✅ | Single- and multi-extent files (incl. multi-sector) |
 | ListDir | ✅ | Directory records; `.`/`..` filtered out |
 | Stat | ✅ | Rock Ridge POSIX mode when present, else synthesised; size + extent LBA |
 | Names | ✅ | Rock Ridge real names when present; else base ECMA-119 (`;version` stripped, case-insensitive) |
 | Rock Ridge (POSIX names/perms/symlinks) | ✅ | `SP`/`NM`/`PX`/`SL`/`CE` continuation; deep-dir relocation (`CL`/`PL`/`RE`) not yet |
 | ReadLink / symlinks | ✅ | Rock Ridge `SL` targets |
 | Joliet (UCS-2 long names) | ✅ | Supplementary VD; used when Rock Ridge is absent |
-| Multi-extent files | ❌ | Returns an error (planned) |
+| Multi-extent files | ✅ | ECMA-119 §6.5.1; consecutive records merged, extents concatenated in order |
 | Write operations | ❌ | Read-only format; mutators return `ErrReadOnly` |
 
 ## References
@@ -57,5 +57,8 @@ entries, err := fs.ListDir("/")
   areas; deep-directory relocation (`CL`/`PL`/`RE`) is not.
 - Joliet (UCS-2 long names) is decoded from the supplementary volume descriptor
   and used when Rock Ridge is absent; without either, names appear uppercased.
-- Multi-extent files are not supported.
+- Multi-extent files (ECMA-119 §6.5.1) are read: a file recorded as several
+  consecutive directory records — every record but the last carrying the
+  multi-extent flag — is presented as one entry whose contents are the in-order
+  concatenation of its extents.
 - Intended for tooling and testing.
