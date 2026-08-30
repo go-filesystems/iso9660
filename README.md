@@ -22,6 +22,7 @@ through the shared `github.com/go-filesystems/interface` `Filesystem` API.
 |---|---:|---|
 | Open / Close | ✅ | Primary Volume Descriptor (`CD001`) |
 | ReadFile | ✅ | Single- and multi-extent files (incl. multi-sector) |
+| Read at an offset | ✅ | `(*FS).OpenFile(path)` → `io.ReaderAt` + `Size()` (`filesystem.Opener` / `filesystem.File`); extent-aware, reads no data at open |
 | ListDir | ✅ | Directory records; `.`/`..` filtered out |
 | Stat | ✅ | Rock Ridge POSIX mode when present, else synthesised; size + extent LBA |
 | Names | ✅ | Rock Ridge real names when present; else base ECMA-119 (`;version` stripped, case-insensitive) |
@@ -55,6 +56,39 @@ defer fs.Close()
 data, err := fs.ReadFile("/BOOT/GRUB/GRUB.CFG")
 entries, err := fs.ListDir("/")
 ```
+
+### Reading part of a file
+
+`ReadFile` returns the whole file, which is no use to anything that serves reads
+on demand — a mount, an NFS or 9P export — where a 4 KiB request out of a
+multi-gigabyte ISO must not read the lot. The driver implements the optional
+[`filesystem.Opener`](https://github.com/go-filesystems/interface) capability:
+
+```go
+var generic filesystem.Filesystem = fs
+if o, ok := generic.(filesystem.Opener); ok {
+    f, err := o.OpenFile("/BOOT/BIG.IMG")
+    if err != nil { /* ... */ }
+    defer f.Close()
+
+    buf := make([]byte, 4096)
+    n, err := f.ReadAt(buf, 1<<30) // only the bytes asked for
+    _, _ = n, err
+    _ = f.Size()                   // from the directory record; reads nothing
+}
+```
+
+`OpenFile` records where the file's extents live and reads none of them. File data
+is contiguous within an extent, and a multi-extent file (ECMA-119 §6.5.1) is the
+concatenation of several whose lengths are **byte counts, not block counts** — so
+extent boundaries do not fall on logical-block boundaries and the offset→disk
+mapping is a search, never a division. `ReadAt` follows `io.ReaderAt` exactly
+(`n < len(p)` only with a non-nil error, `io.EOF` at the end) and is safe to call
+concurrently.
+
+Note the method `(*FS).OpenFile(path) (filesystem.File, error)` is distinct from
+the package-level `iso9660.OpenFile(path) (*FS, error)`, which opens an image from
+the host filesystem.
 
 ### Authoring a fresh image
 
