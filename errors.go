@@ -20,7 +20,11 @@
 // yet written.
 package iso9660
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+	iofs "io/fs"
+)
 
 // Sentinel errors. Compare with errors.Is so wrapped errors continue to match.
 var (
@@ -33,7 +37,7 @@ var (
 	ErrBadDescriptor = errors.New("iso9660: no valid primary volume descriptor")
 
 	// ErrNotFound is returned when a path component cannot be located.
-	ErrNotFound = errors.New("iso9660: path not found")
+	ErrNotFound = fmt.Errorf("iso9660: path not found: %w", iofs.ErrNotExist)
 
 	// ErrNotDirectory is returned when ListDir targets a non-directory.
 	ErrNotDirectory = errors.New("iso9660: not a directory")
