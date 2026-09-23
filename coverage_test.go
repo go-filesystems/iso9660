@@ -541,10 +541,10 @@ func TestParseRockRidgeComponents(t *testing.T) {
 	comp := func(flags byte, s string) []byte {
 		return append([]byte{flags, byte(len(s))}, s...)
 	}
-	body := comp(slCompRoot, "")      // "/"
-	body = append(body, comp(slCompCur, "")...)          // "."
-	body = append(body, comp(slCompPar, "")...)          // ".."
-	body = append(body, comp(0x00, "etc")...)            // normal
+	body := comp(slCompRoot, "")                // "/"
+	body = append(body, comp(slCompCur, "")...) // "."
+	body = append(body, comp(slCompPar, "")...) // ".."
+	body = append(body, comp(0x00, "etc")...)   // normal
 	sl = append(sl, body...)
 	sl[2] = byte(len(sl))
 	rr := parseRockRidge(sl)
