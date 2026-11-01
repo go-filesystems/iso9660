@@ -16,6 +16,10 @@ const (
 	vdTypePrimary     = 1
 	vdTypeSupplement  = 2 // supplementary VD — Joliet when the escape says UCS-2
 	vdTypeTerminator  = 255
+
+	// maxDescriptorSector is the first sector NOT scanned for volume
+	// descriptors: 16..99 are, as in the Linux reader.
+	maxDescriptorSector = 100
 )
 
 var standardID = []byte("CD001")
@@ -41,7 +45,11 @@ func readVolume(rs io.ReaderAt) (*Volume, error) {
 	buf := make([]byte, sectorSize)
 	v := &Volume{}
 	havePVD := false
-	for sector := int64(systemAreaSectors); ; sector++ {
+	// The reference reader looks at sectors 16..99 only and gives up after that
+	// (linux fs/isofs/inode.c, isofs_fill_super: iso_blknum < vol_desc_start+100).
+	// Without a bound, an image (or a stream of unknown length) made of
+	// descriptors that never end is read to its last byte.
+	for sector := int64(systemAreaSectors); sector < maxDescriptorSector; sector++ {
 		if _, err := rs.ReadAt(buf, sector*sectorSize); err != nil {
 			return nil, fmt.Errorf("iso9660: read volume descriptor @sector %d: %w", sector, err)
 		}
@@ -77,6 +85,8 @@ func readVolume(rs io.ReaderAt) (*Volume, error) {
 			return v, nil
 		}
 	}
+	return nil, fmt.Errorf("%w: no terminator in sectors %d-%d", ErrBadDescriptor,
+		systemAreaSectors, maxDescriptorSector-1)
 }
 
 // isJolietEscape reports whether an SVD escape-sequence field begins with one

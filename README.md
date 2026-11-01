@@ -103,6 +103,24 @@ defer f.Close()
 if err := b.WriteTo(f); err != nil { /* ... */ }
 ```
 
+## Untrusted images
+
+An image is attacker-controlled input and every length in it is a claim. Each
+input-driven allocation is bounded before it is made (`bombs_test.go` measures
+each road with `runtime.MemStats`):
+
+| Claim in the image | Bound |
+|---|---|
+| a file's or directory's length, image size known | at most the image size, and the extent must lie inside the image (checked before anything is reserved) |
+| the same, image size unknown (`Open(rs, -1)`) | the buffer grows with the bytes the reader actually delivers (1 MiB steps, doubling), so a forged 512 MiB length over a 40 KiB image costs 40 KiB; claims above 1 GiB are refused |
+| a directory extent | at most 16 MiB (`ErrCorrupt` wrapping `safeio.ErrTooLarge`) |
+| the volume-descriptor scan | sectors 16-99, as in the Linux reader |
+
+`ReadFile` returns the whole file; for large files use `OpenFile` + `ReadAt`,
+which allocates nothing proportional to the claimed size.
+
+Fuzz targets: `FuzzOpen`, `FuzzBombs` (asserts a per-input allocation budget).
+
 ## Limitations
 
 - An already-mastered image is read-only once opened (the on-disk format has
