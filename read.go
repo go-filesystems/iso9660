@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"slices"
 
 	"github.com/go-volumes/safeio"
 )
@@ -30,6 +31,72 @@ func allocCeiling(size int64) int64 {
 // enough that a forged length cannot exhaust host memory.
 const maxUnknownAlloc = 1 << 30
 
+// maxDirExtent bounds one directory's extent, 16 MiB. A directory's size is a
+// u32 on disk, but its records are at least 34 bytes each and parse into
+// several times that (a dirRecord plus its name and System Use copies), so a
+// 4 GiB claim over a large real image would otherwise cost most of the image
+// again, several times over, on every lookup that passes through it.
+const maxDirExtent = 16 << 20
+
+// growChunk is the first step of a read whose size could not be checked against
+// an image size: the buffer then grows (doubling) with the bytes the reader
+// actually delivers instead of being reserved from the claim.
+const growChunk = 1 << 20
+
+// maxInt is the largest slice length of the target: 2^31-1 on a 32-bit build,
+// where a u32 length from the image can otherwise convert to a negative int.
+const maxInt = int64(^uint(0) >> 1)
+
+// checkSize reports safeio.ErrTooLarge when n is negative, exceeds the
+// allocation ceiling, or cannot be a slice length on this target.
+func checkSize(n, maxAlloc int64) error {
+	if n < 0 || maxAlloc < 0 || n > maxAlloc || n > maxInt {
+		return fmt.Errorf("%w: size %d exceeds ceiling %d", safeio.ErrTooLarge, n, min(maxAlloc, maxInt))
+	}
+	return nil
+}
+
+// sizeUnknown reports whether maxAlloc is the fallback for an unknown image
+// size rather than the image size itself.
+func sizeUnknown(maxAlloc int64) bool { return maxAlloc == maxUnknownAlloc }
+
+// checkExtent reports ErrOutOfBounds when [off, off+n) is not inside an image
+// of maxAlloc bytes. With the size unknown there is nothing to compare against;
+// the read itself reports a short image.
+func checkExtent(off, n, maxAlloc int64) error {
+	if sizeUnknown(maxAlloc) {
+		return nil
+	}
+	if off < 0 || n < 0 || off > maxAlloc-n {
+		return fmt.Errorf("%w: extent [%d,+%d) outside the %d-byte image", safeio.ErrOutOfBounds, off, n, maxAlloc)
+	}
+	return nil
+}
+
+// appendAt appends the n bytes at off of rs to dst and returns the extended
+// slice. When the image size is known the caller has already checked that the
+// bytes exist, so the room is reserved at once; when it is not (maxAlloc is the
+// unknown-size fallback) the buffer grows with what rs delivers, so a forged
+// 1 GiB length over a 40 KiB image costs 40 KiB, not 1 GiB.
+func appendAt(rs io.ReaderAt, dst []byte, off, n, maxAlloc int64) ([]byte, int64, error) {
+	grow := sizeUnknown(maxAlloc)
+	done := int64(0)
+	for done < n {
+		step := n - done
+		if grow && int64(cap(dst)-len(dst)) < step {
+			step = min(step, max(growChunk, int64(len(dst))))
+		}
+		old := len(dst)
+		dst = slices.Grow(dst, int(step))[:old+int(step)]
+		m, err := rs.ReadAt(dst[old:], off+done)
+		if err != nil && !(err == io.EOF && int64(m) == step) {
+			return dst[:old+m], done + int64(m), err
+		}
+		done += step
+	}
+	return dst, done, nil
+}
+
 // readDirRecords reads and parses the directory whose extent is described by
 // rec. ISO 9660 directory records never span a logical sector, so a zero
 // length byte means "skip to the next sector". The "." and ".." entries are
@@ -40,11 +107,18 @@ func readDirRecords(rs io.ReaderAt, vol *Volume, rec dirRecord, maxAlloc int64) 
 		return nil, ErrNotDirectory
 	}
 	bs := int(vol.BlockSize)
-	data, err := safeio.MakeBytes(int64(rec.Size), maxAlloc)
-	if err != nil {
+	if rec.Size > maxDirExtent {
+		return nil, fmt.Errorf("%w: dir extent size %d: %w (directory limit %d)",
+			ErrCorrupt, rec.Size, safeio.ErrTooLarge, maxDirExtent)
+	}
+	if err := checkSize(int64(rec.Size), maxAlloc); err != nil {
 		return nil, fmt.Errorf("%w: dir extent size %d: %w", ErrCorrupt, rec.Size, err)
 	}
-	if _, err := rs.ReadAt(data, int64(rec.ExtentLBA)*int64(bs)); err != nil {
+	if err := checkExtent(int64(rec.ExtentLBA)*int64(bs), int64(rec.Size), maxAlloc); err != nil {
+		return nil, fmt.Errorf("%w: dir extent @LBA %d: %w", ErrCorrupt, rec.ExtentLBA, err)
+	}
+	data, _, err := appendAt(rs, nil, int64(rec.ExtentLBA)*int64(bs), int64(rec.Size), maxAlloc)
+	if err != nil {
 		return nil, fmt.Errorf("iso9660: read dir extent @LBA %d: %w", rec.ExtentLBA, err)
 	}
 
@@ -141,25 +215,54 @@ func readFile(rs io.ReaderAt, vol *Volume, rec dirRecord, maxAlloc int64) ([]byt
 	if exts == nil {
 		exts = []extent{{lba: rec.ExtentLBA, size: rec.Size}}
 	}
-	data, err := safeio.MakeBytes(int64(rec.Size), maxAlloc)
-	if err != nil {
+	total := int64(rec.Size)
+	if err := checkSize(total, maxAlloc); err != nil {
 		return nil, fmt.Errorf("%w: file size %d: %w", ErrCorrupt, rec.Size, err)
 	}
-	off := 0
+	// Validate every extent against the declared size and, when the image size
+	// is known, against the image BEFORE reserving the output: a record whose
+	// extents lie outside the image costs nothing. With the size unknown the
+	// output grows with the bytes the reader delivers (see appendAt) rather
+	// than being reserved from the claim.
+	var covered int64
 	for _, e := range exts {
 		if e.size == 0 {
 			continue
 		}
 		// Defend against a forged extent list whose sizes overrun the merged
-		// Size (a slice-bounds panic otherwise): validate before slicing.
-		dst, err := safeio.Slice(data, off, int(e.size))
-		if err != nil {
+		// Size.
+		if covered+int64(e.size) > total {
+			return nil, fmt.Errorf("%w: file extent @LBA %d: %w", ErrCorrupt, e.lba,
+				fmt.Errorf("%w: range [%d,%d+%d) exceeds buffer length %d",
+					safeio.ErrOutOfBounds, covered, covered, e.size, total))
+		}
+		if err := checkExtent(int64(e.lba)*int64(vol.BlockSize), int64(e.size), maxAlloc); err != nil {
 			return nil, fmt.Errorf("%w: file extent @LBA %d: %w", ErrCorrupt, e.lba, err)
 		}
-		if _, err := rs.ReadAt(dst, int64(e.lba)*int64(vol.BlockSize)); err != nil {
+		covered += int64(e.size)
+	}
+	if covered < total && sizeUnknown(maxAlloc) {
+		// Zero-filling the uncovered tail would reserve the claim after all.
+		return nil, fmt.Errorf("%w: extents cover %d of %d bytes", ErrCorrupt, covered, total)
+	}
+	var data []byte
+	if !sizeUnknown(maxAlloc) {
+		data = make([]byte, 0, total)
+	}
+	for _, e := range exts {
+		if e.size == 0 {
+			continue
+		}
+		var err error
+		data, _, err = appendAt(rs, data, int64(e.lba)*int64(vol.BlockSize), int64(e.size), maxAlloc)
+		if err != nil {
 			return nil, fmt.Errorf("iso9660: read file extent @LBA %d: %w", e.lba, err)
 		}
-		off += int(e.size)
 	}
-	return data, nil
+	// Bytes past what the extents cover read as zeros (known size only: the
+	// capacity is already there).
+	if data == nil {
+		data = []byte{}
+	}
+	return data[:total:total], nil
 }
