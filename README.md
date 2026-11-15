@@ -121,6 +121,19 @@ which allocates nothing proportional to the claimed size.
 
 Fuzz targets: `FuzzOpen`, `FuzzBombs` (asserts a per-input allocation budget).
 
+## Judged by
+
+The Linux kernel (7.0), `isoinfo` and `xorriso`/`genisoimage`, run as root in a
+Tart VM by [kerneljudge](https://github.com/go-filesystems/kerneljudge)
+(`kerneljudge run --driver <clone>`; the test is `kerneljudge_test.go`, behind
+`FS_KERNEL_JUDGE=1`). Images written by `Builder`, by `xorriso -as mkisofs` and by
+`genisoimage` (all ISO level 1) are each held to a fixed corpus (nested
+directories, a 1 MiB and a 32 MiB file, empty and odd-sized files) by `isoinfo`,
+a read-only kernel mount and this reader: all three pass, byte for byte, and no
+defect was found. The corpus names are mapped to level-1 upper-case 8.3 names
+(the base writer has no Joliet or Rock Ridge, so UTF-8 names, symlinks, xattrs
+and permissions are outside what this format holds here).
+
 ## Limitations
 
 - An already-mastered image is read-only once opened (the on-disk format has
