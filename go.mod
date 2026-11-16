@@ -4,6 +4,6 @@ go 1.27.1
 
 require (
 	github.com/go-filesystems/interface v0.6.0
-	github.com/go-filesystems/kerneljudge v0.2.0
+	github.com/go-filesystems/kerneljudge v0.3.1
 	github.com/go-volumes/safeio v0.0.0-20261101001828-0e1734761f39
 )
