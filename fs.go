@@ -30,6 +30,7 @@ type FS struct {
 	joliet   bool      // root is the Joliet (UCS-2) tree
 	suspSkip int       // SUSP LEN_SKP: bytes to skip at the start of each System Use Area
 	closer   io.Closer
+	dirs     dirCache // parsed directories, bounded (see dircache.go)
 }
 
 var _ filesystem.Filesystem = (*FS)(nil)
@@ -182,7 +183,7 @@ func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, hop
 		if !cur.isDir() {
 			return dirRecord{}, fmt.Errorf("%w: %q", ErrNotDirectory, name)
 		}
-		entries, err := readDirRecords(fs.rs, fs.vol, cur, allocCeiling(fs.size))
+		entries, err := fs.dirRecords(cur)
 		if err != nil {
 			return dirRecord{}, err
 		}
@@ -236,7 +237,7 @@ func (fs *FS) ListDir(path string) ([]filesystem.DirEntry, error) {
 	if err != nil {
 		return nil, err
 	}
-	entries, err := readDirRecords(fs.rs, fs.vol, rec, allocCeiling(fs.size))
+	entries, err := fs.dirRecords(rec)
 	if err != nil {
 		return nil, err
 	}
