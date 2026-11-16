@@ -68,19 +68,57 @@ func TestStatOfKnownDirectoriesCostsNoDeviceRead(t *testing.T) {
 	}
 }
 
-func TestDirCacheIsBounded(t *testing.T) {
+func TestDirCacheIsBoundedInBytes(t *testing.T) {
 	var c dirCache
-	big := make([]dirRecord, maxCachedRecords/2+1)
-	c.put(dirKey{1, 1}, big)
-	c.put(dirKey{2, 2}, big) // evicts the first: both would exceed the budget
+	// A directory whose records carry large system-use areas: few records, many bytes.
+	heavy := func() []dirRecord {
+		recs := make([]dirRecord, 10)
+		for i := range recs {
+			recs[i].sysUse = make([]byte, maxCachedBytes/12)
+		}
+		return recs
+	}
+	c.put(dirKey{1, 1}, heavy())
+	c.put(dirKey{2, 2}, heavy()) // together they exceed the budget: the first goes
 	if _, ok := c.get(dirKey{1, 1}); ok {
-		t.Error("the cache grew past its record budget")
+		t.Error("the cache grew past its byte budget")
 	}
-	if c.records > maxCachedRecords {
-		t.Errorf("%d records held, budget %d", c.records, maxCachedRecords)
+	if c.bytes > maxCachedBytes {
+		t.Errorf("%d bytes held, budget %d", c.bytes, maxCachedBytes)
 	}
-	c.put(dirKey{3, 3}, make([]dirRecord, maxCachedRecords+1))
+	tooBig := []dirRecord{{sysUse: make([]byte, maxCachedBytes+1)}}
+	c.put(dirKey{3, 3}, tooBig)
 	if _, ok := c.get(dirKey{3, 3}); ok {
-		t.Error("a directory larger than the whole budget was cached")
+		t.Error("a directory costing more than the whole budget was cached")
+	}
+	// One merged record (a run of multi-extent records) is charged for its extents.
+	one := []dirRecord{{extents: make([]extent, maxCachedBytes/8+1)}}
+	c.put(dirKey{4, 4}, one)
+	if _, ok := c.get(dirKey{4, 4}); ok {
+		t.Error("a record with a huge extent list was cached as if it were one small record")
+	}
+}
+
+func TestListDirOfAFileIsNotServedFromTheDirectoryCache(t *testing.T) {
+	img := buildDirFiles(t, 3)
+	fs, err := Open(bytes.NewReader(img), int64(len(img)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fs.ListDir("/D"); err != nil { // caches /D
+		t.Fatal(err)
+	}
+	rec, err := fs.resolve("/D/F0000.TXT")
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := fs.resolve("/D")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A file record that names the cached directory's extent.
+	rec.ExtentLBA, rec.Size = d.ExtentLBA, d.Size
+	if _, err := fs.dirRecords(rec); err == nil {
+		t.Error("a regular file was listed as the cached directory")
 	}
 }
