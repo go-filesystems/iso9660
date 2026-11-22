@@ -141,7 +141,10 @@ and permissions are outside what this format holds here).
 - `Builder` writes the base ECMA-119 layer (interchange level 1) only — Rock
   Ridge and Joliet extensions are decoded on read but not yet written.
 - Rock Ridge (`SP`/`NM`/`PX`/`SL`) is decoded, including `CE` continuation
-  areas; deep-directory relocation (`CL`/`PL`/`RE`) is not.
+  areas; deep-directory relocation (`CL`/`PL`/`RE`) is not. One path lookup
+  follows at most 40 symlinks IN TOTAL (a `go-volumes/safeio` `SymlinkBudget`),
+  not only 40 deep: a chain `a -> b/b -> ...` would otherwise cost 2^n lookups.
+  It is refused with `ErrTooManyLinks`, which also matches `safeio.ErrSymlinkLoop`.
 - Joliet (UCS-2 long names) is decoded from the supplementary volume descriptor
   and used when Rock Ridge is absent; without either, names appear uppercased.
 - Multi-extent files (ECMA-119 §6.5.1) are read: a file recorded as several

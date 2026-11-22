@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	filesystem "github.com/go-filesystems/interface"
+	"github.com/go-volumes/safeio"
 )
 
 // Unix mode type bits used to synthesise a Stat mode (base ISO 9660 carries no
@@ -154,30 +155,24 @@ func (fs *FS) Close() error {
 	return nil
 }
 
-// maxSymlinkHops bounds Rock Ridge symlink resolution per path lookup.
-const maxSymlinkHops = 40
-
 // resolve walks an absolute path from the root, following Rock Ridge symlinks
 // (including a final-component symlink). Use resolveNoFollow for lstat-style
 // semantics where the final symlink must not be followed.
 func (fs *FS) resolve(path string) (dirRecord, error) {
-	return fs.resolveFrom(fs.root, splitPath(path), true, 0)
+	return fs.resolveFrom(fs.root, splitPath(path), true, safeio.NewSymlinkBudget(0))
 }
 
 // resolveNoFollow is like resolve but does not follow a symlink that is the
 // final path component (so ReadLink sees the link itself).
 func (fs *FS) resolveNoFollow(path string) (dirRecord, error) {
-	return fs.resolveFrom(fs.root, splitPath(path), false, 0)
+	return fs.resolveFrom(fs.root, splitPath(path), false, safeio.NewSymlinkBudget(0))
 }
 
 // resolveFrom walks parts from start. Component matching prefers an exact match
 // on the effective (Rock Ridge / Joliet / ISO) name, then case-insensitive
 // (base ISO names are uppercased). Intermediate Rock Ridge symlinks are always
 // followed; the final one is followed only when followFinal is set.
-func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, hops int) (dirRecord, error) {
-	if hops > maxSymlinkHops {
-		return dirRecord{}, ErrTooManyLinks
-	}
+func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, budget *safeio.SymlinkBudget) (dirRecord, error) {
 	cur := start
 	for i, name := range parts {
 		if !cur.isDir() {
@@ -207,11 +202,14 @@ func (fs *FS) resolveFrom(start dirRecord, parts []string, followFinal bool, hop
 		}
 		last := i == len(parts)-1
 		if rr := fs.rrFor(child); rr.isSymlink && (!last || followFinal) {
+			if err := budget.Follow(); err != nil {
+				return dirRecord{}, fmt.Errorf("%w: %w", ErrTooManyLinks, err)
+			}
 			base := cur // relative target resolves against the containing dir
 			if strings.HasPrefix(rr.symlink, "/") {
 				base = fs.root
 			}
-			child, err = fs.resolveFrom(base, splitPath(rr.symlink), true, hops+1)
+			child, err = fs.resolveFrom(base, splitPath(rr.symlink), true, budget)
 			if err != nil {
 				return dirRecord{}, err
 			}
@@ -280,7 +278,7 @@ func (fs *FS) Stat(path string) (filesystem.Stat, error) {
 // the image. It may contain ".." components or an absolute path, so a
 // malicious image can point it anywhere. In-driver path resolution
 // (resolveFrom) is unaffected — it filters "."/".." and rebases absolute
-// targets against the image root, and caps symlink hops at maxSymlinkHops — so
+// targets against the image root, and caps symlink follows with a safeio.SymlinkBudget — so
 // the link can never escape the image when traversed through this package.
 // Callers that interpret the returned string against the HOST filesystem (for
 // example to recreate the link on disk during extraction) MUST sanitise it
